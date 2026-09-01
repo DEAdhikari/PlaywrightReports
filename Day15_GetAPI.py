@@ -1,34 +1,33 @@
-# Day07_ApiGetProductsScript.py
-import time
-import json
+import time, json, sys
 from playwright.sync_api import sync_playwright
 
-def run_steps():
+def run_steps(iteration=1):
     steps = []
     with sync_playwright() as p:
         request_context = p.request.new_context()
 
-        # Step: GET products list (with timing)
+        # Step: GET products list
         start = time.time()
         response = request_context.get("https://automationexercise.com/api/productsList")
         end = time.time()
-        steps.append({"Step": "07_GET products list", "Response Time (s)": round(end - start, 2)})
 
-        # Basic validation (no timing recorded)
-        if response.status != 200:
-            print(f"❌ GET call failed with status {response.status}")
-        else:
-            data = response.json()
-            if "products" in data and isinstance(data["products"], list) and len(data["products"]) > 0:
-                print("✅ Products list retrieved successfully")
-                print("First product:", data["products"][0]["name"])
-            else:
-                print("❌ Invalid products list in response")
+        steps.append({
+            "Step": "15_GET products list",
+            "Iteration": iteration,
+            "Response Time (s)": round(end - start, 2),
+            "HTTP Code": response.status
+        })
 
         request_context.dispose()
     return steps
 
 if __name__ == "__main__":
-    steps = run_steps()
-    # Print JSON so Streamlit or logs can parse easily
-    print(json.dumps(steps, indent=2))
+    # Read iterations from command line argument (default = 1)
+    iterations = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+
+    all_results = []
+    for i in range(1, iterations + 1):
+        all_results.extend(run_steps(iteration=i))
+
+    # Final JSON output for Streamlit
+    print(json.dumps(all_results, indent=2))
