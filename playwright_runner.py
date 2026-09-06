@@ -9,6 +9,7 @@ from fpdf import FPDF
 import time
 import altair as alt
 import matplotlib.pyplot as plt
+from report_utils import generate_pdf_report, push_to_github
 
 TESTS_DIR = r"D:\PlaywrightUI\tests"
 REPO_PATH = r"D:\PlaywrightUI"
@@ -28,6 +29,7 @@ execution_name = st.sidebar.text_input("Execution Name:", value="TestExecution")
 # --- Sidebar Run Mode for API ---
 run_mode = None
 execution_time = None
+ramp_up_time = None
 if execution_mode == "API":
     run_mode = st.sidebar.radio(
         "Select Run Mode:",
@@ -57,21 +59,23 @@ if execution_mode == "UI":
             iterations = st.number_input("Iterations", min_value=1, max_value=50, value=1, step=1, key=f"{script}_iterations_{idx}")
         with cols[3]:
             wait_time = st.number_input("Wait Time (sec)", min_value=0, max_value=60, value=0, step=1, key=f"{script}_wait_{idx}")
-        script_config[script] = (threads, iterations, wait_time, "iterations")
+        script_config[script] = (threads, iterations, wait_time, "iterations", 0)
 
 else:  # API mode
-    st.markdown("### Configure API scripts, SLA, threads, iterations/time, and wait time")
+    st.markdown("### Configure API scripts, SLA, threads, iterations/time, wait time, and ramp up")
 
-    cols_top = st.columns([2, 2])
+    cols_top = st.columns([2, 2, 2])
     with cols_top[0]:
-        num_scripts = st.number_input("How many API scripts do you want to run?", min_value=1, max_value=10, value=1, step=1)
+        num_scripts = st.number_input("Number of Scripts", min_value=1, max_value=10, value=1, step=1)
     with cols_top[1]:
         if run_mode == "Run by Time":
             execution_time = st.number_input("Execution Time (minutes)", min_value=1, max_value=120, value=5, step=1)
+    with cols_top[2]:
+        if run_mode == "Run by Time":
+            ramp_up_time = st.number_input("Ramp Up Time (seconds)", min_value=0, max_value=60, value=0, step=1)
 
     for idx in range(num_scripts):
         st.markdown(f"#### API Script {idx+1}")
-        # Threads and Iterations side by side
         if run_mode == "Run by Iterations":
             cols = st.columns([2, 1, 1, 1, 1])
         else:
@@ -83,16 +87,17 @@ else:  # API mode
             sla = st.number_input("SLA Threshold (s)", min_value=0.1, max_value=10.0, value=2.0, step=0.1, key=f"{script}_sla_{idx}")
         with cols[2]:
             threads = st.number_input("Threads", min_value=1, max_value=20, value=1, step=1, key=f"{script}_threads_api_{idx}")
+
         if run_mode == "Run by Iterations":
             with cols[3]:
                 iterations = st.number_input("Iterations", min_value=1, max_value=50, value=1, step=1, key=f"{script}_iterations_api_{idx}")
             with cols[4]:
                 wait_time = st.number_input("Wait Time (sec)", min_value=0, max_value=60, value=0, step=1, key=f"{script}_wait_api_{idx}")
-            script_config[script] = (sla, threads, iterations, wait_time, "iterations")
+            script_config[script] = (sla, threads, iterations, wait_time, "iterations", 0)
         else:
             with cols[3]:
                 wait_time = st.number_input("Wait Time (sec)", min_value=0, max_value=60, value=0, step=1, key=f"{script}_wait_api_{idx}")
-            script_config[script] = (sla, threads, execution_time, wait_time, "time")
+            script_config[script] = (sla, threads, execution_time, wait_time, "time", ramp_up_time)
 
 # --- Script runners ---
 def run_script_api(script, thread_id, iteration_id, sla_threshold, wait_time):
@@ -134,82 +139,66 @@ def run_script_api(script, thread_id, iteration_id, sla_threshold, wait_time):
         time.sleep(wait_time)
     return record
 
-# --- PDF Report ---
-def generate_pdf_report(summary_df, start_time, end_time, exec_name, chart_path):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-
-    pdf.cell(200, 10, txt=f"Execution Report - {exec_name}", ln=True, align="C")
-    pdf.ln(10)
-    pdf.cell(200, 10, txt=f"Mode: {execution_mode}", ln=True)
-    pdf.cell(200, 10, txt=f"Run Mode: {run_mode}", ln=True)
-    pdf.cell(200, 10, txt=f"Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
-    pdf.cell(200, 10, txt=f"End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
-    pdf.cell(200, 10, txt=f"Total Duration: {str(end_time - start_time)}", ln=True)
-    pdf.ln(10)
-
-    headers = list(summary_df.columns)
-    col_widths = [200 // len(headers)] * len(headers)
-
-    for i, header in enumerate(headers):
-        pdf.cell(col_widths[i], 10, header, border=1)
-    pdf.ln()
-
-    pdf.set_font("Arial", size=10)
-    for _, row in summary_df.iterrows():
-        for i, header in enumerate(headers):
-            pdf.cell(col_widths[i], 10, str(row[header]), border=1)
-        pdf.ln()
-
-    pdf.ln(10)
-    pdf.cell(200, 10, txt="Charts (Pass Only)", ln=True, align="C")
-    pdf.image(chart_path, x=10, y=None, w=180)
-
-    pdf_file = os.path.join(REPO_PATH, f"{exec_name}_{execution_mode}_summary.pdf")
-    pdf.output(pdf_file)
-    return pdf_file
-
-def push_to_github(pdf_file, repo_path, commit_message="Add execution report"):
-    try:
-        subprocess.run(["git", "-C", repo_path, "add", pdf_file], check=True)
-        subprocess.run(["git", "-C", repo_path, "commit", "-m", commit_message], check=True)
-        subprocess.run(["git", "-C", repo_path, "push", REMOTE_NAME, BRANCH_NAME], check=True)
-        st.success("✅ Report pushed to GitHub successfully!")
-    except subprocess.CalledProcessError as e:
-        st.error(f"❌ Git error: {e}")
-
 # --- Run Scripts ---
 if st.button("Run Scripts"):
     start_time = datetime.now()
     results = []
-    with ThreadPoolExecutor() as executor:
-        futures = []
-        for script, (sla, threads, value, wait_time, mode) in script_config.items():
-            if mode == "iterations":
-                for t in range(1, threads+1):
-                    for i in range(1, value+1):
-                                                futures.append(executor.submit(run_script_api, script, t, i, sla, wait_time))
-            else:  # Run by Time
-                end_time_limit = datetime.now() + timedelta(minutes=value)
-                i = 1
-                while datetime.now() < end_time_limit:
-                    for t in range(1, threads+1):
-                        futures.append(executor.submit(run_script_api, script, t, i, sla, wait_time))
-                    i += 1
+    for script, (sla, threads, value, wait_time, mode, ramp_up) in script_config.items():
+        if mode == "iterations":
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                futures = [executor.submit(run_script_api, script, t, i, sla, wait_time)
+                           for t in range(1, threads+1)
+                           for i in range(1, value+1)]
+                for future in as_completed(futures):
+                    results.append(future.result())
+        else:  # Run by Time
+            end_time_limit = datetime.now() + timedelta(minutes=value)
+            total_duration = int((end_time_limit - start_time).total_seconds())
+            i = 1
+            status_placeholder = st.empty()
 
-                    # ✅ Apply wait time between thread batches
+            # --- Show initial table immediately ---
+            initial_status_df = pd.DataFrame({
+                "Start Time": [start_time.strftime('%Y-%m-%d %H:%M:%S')],
+                "Remaining Time (s)": [total_duration],
+                "Active Threads": [0]
+            })
+            status_placeholder.dataframe(initial_status_df, use_container_width=True, hide_index=True)
+
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                while datetime.now() < end_time_limit:
+                    futures = [executor.submit(run_script_api, script, t, i, sla, wait_time)
+                               for t in range(1, threads+1)]
+                    for future in as_completed(futures):
+                        results.append(future.result())
+
+                    remaining_time = (end_time_limit - datetime.now()).total_seconds()
+                    if remaining_time <= 0:
+                        break
+
+                    status_df = pd.DataFrame({
+                        "Start Time": [start_time.strftime('%Y-%m-%d %H:%M:%S')],
+                        "Remaining Time (s)": [max(0, int(remaining_time))],
+                        "Active Threads": [threads]
+                    })
+                    status_placeholder.dataframe(status_df, use_container_width=True, hide_index=True)
+
+                    if ramp_up > 0:
+                        time.sleep(ramp_up)
+                    i += 1
                     if wait_time > 0:
                         time.sleep(wait_time)
 
-                    # ✅ Check again to avoid overshooting execution time
-                    if datetime.now() >= end_time_limit:
-                        break
+            # --- Final status after completion ---
+            final_status_df = pd.DataFrame({
+                "Start Time": [start_time.strftime('%Y-%m-%d %H:%M:%S')],
+                "Remaining Time (s)": [0],
+                "Active Threads": [0]
+            })
+            status_placeholder.dataframe(final_status_df, use_container_width=True, hide_index=True)
 
-        for future in as_completed(futures):
-            results.append(future.result())
-
-    end_time = datetime.now()
+    # --- Results aggregation
+        end_time = datetime.now()
     if results:
         final_df = pd.DataFrame(results)
 
@@ -231,11 +220,45 @@ if st.button("Run Scripts"):
             .reset_index()
         )
 
-        # Add TPM (global, based on Pass count only)
         summary_df["TPM"] = tpm
 
         # --- Show summary table ---
-        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        #st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+        # --- Show summary table with header and fixed column widths ---
+        st.markdown("## 📊 Final Execution Results")
+
+        column_widths = {
+            "Transaction": 150,
+            "Total_Threads_Executed": 120,
+            "Avg_Response_Time_s": 150,
+            "Pass_Count": 100,
+            "Fail_Count": 100,
+            "TPM": 80
+        }
+
+        st.markdown(
+        """
+        <style>
+        .stDataFrame [role="columnheader"] div {
+        white-space: normal !important;
+        text-align: center;
+        word-wrap: break-word !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+        )
+
+        st.dataframe(
+                summary_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    col: st.column_config.Column(width=width)
+                    for col, width in column_widths.items()
+                }
+            )
 
         # --- Raw results download ---
         raw_csv = final_df.to_csv(index=False).encode("utf-8")
@@ -248,13 +271,11 @@ if st.button("Run Scripts"):
 
         # --- Chart based on Pass executions only ---
         pass_df = final_df[final_df["SLA"] == "Pass"]
-
         chart = alt.Chart(pass_df).mark_bar().encode(
             x=alt.X("Transaction:N", title="Transaction Name"),
             y=alt.Y("Response Time (s):Q", title="Average Response Time (s)"),
             tooltip=["Timestamp", "Transaction", "Thread", "Iteration", "Response Time (s)", "HTTP status code"]
         ).properties(title="API Performance Summary (Pass Only)").interactive()
-
         st.altair_chart(chart, use_container_width=True)
 
         # --- Matplotlib chart (Pass only) ---
@@ -275,9 +296,39 @@ if st.button("Run Scripts"):
         plt.tight_layout()
         plt.savefig(chart_path)
 
-        # --- Generate PDF report ---
-        pdf_file = generate_pdf_report(summary_df, start_time, end_time, execution_name, chart_path)
+        # --- Time-series graph: Response Time vs Elapsed Time per Transaction ---
+        final_df["Elapsed Time (s)"] = (
+            pd.to_datetime(final_df["Timestamp"]) - start_time
+        ).dt.total_seconds()
 
+        fig2, ax2 = plt.subplots(figsize=(10, 6))
+        for txn_name, txn_group in final_df.groupby("Transaction"):
+            ax2.plot(
+                txn_group["Elapsed Time (s)"],
+                txn_group["Response Time (s)"],
+                marker="o",
+                linestyle="-",
+                label=txn_name
+            )
+        ax2.set_xlabel("Elapsed Time (s)")
+        ax2.set_ylabel("Response Time (s)")
+        ax2.set_title("Response Time Trend by Transaction")
+        ax2.legend(title="Transaction", bbox_to_anchor=(1.05, 1), loc="upper left")
+        plt.tight_layout()
+
+        time_series_chart_path = os.path.join(REPO_PATH, "time_series_chart.png")
+        plt.savefig(time_series_chart_path)
+        st.pyplot(fig2)
+
+        # --- Generate PDF report with both charts ---
+        pdf_file = generate_pdf_report(
+            summary_df,
+            start_time,
+            end_time,
+            execution_name,
+            chart_path,
+            extra_chart=time_series_chart_path
+        )
         with open(pdf_file, "rb") as f:
             st.download_button(
                 label="📥 Download Summary Report (PDF)",
