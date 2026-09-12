@@ -42,6 +42,20 @@ st.title(f"🎭 Playwright Test Runner ({execution_mode} Mode) with PDF Report &
 scripts = [f for f in os.listdir(TESTS_DIR) if f.endswith(".py")]
 script_config = {}
 
+# --- Reset results when execution mode or run mode changes ---
+if "last_execution_mode" not in st.session_state:
+    st.session_state["last_execution_mode"] = execution_mode
+if "last_run_mode" not in st.session_state:
+    st.session_state["last_run_mode"] = run_mode
+
+if st.session_state["last_execution_mode"] != execution_mode or st.session_state["last_run_mode"] != run_mode:
+    for key in ["final_df", "summary_df", "pdf_file", "altair_chart", "matplotlib_fig", "time_series_fig"]:
+        if key in st.session_state:
+            del st.session_state[key]
+
+st.session_state["last_execution_mode"] = execution_mode
+st.session_state["last_run_mode"] = run_mode
+
 # --- Config UI ---
 if execution_mode == "UI":
     st.markdown("### Configure scripts, threads, iterations, and wait time")
@@ -186,13 +200,11 @@ if st.button("Run Scripts"):
         )
         summary_df["TPM"] = tpm
 
-                # Save in session state
+        # Save results in session state
         st.session_state["final_df"] = final_df
         st.session_state["summary_df"] = summary_df
-        chart_path = os.path.join(REPO_PATH, "chart.png")
-        time_series_chart_path = os.path.join(REPO_PATH, "time_series_chart.png")
 
-        # Generate charts
+        # Charts
         pass_df = final_df[final_df["SLA"] == "Pass"]
         chart = alt.Chart(pass_df).mark_bar().encode(
             x=alt.X("Transaction:N", title="Transaction Name"),
@@ -208,6 +220,7 @@ if st.button("Run Scripts"):
         ax.set_xlabel("Transaction Name")
         ax.set_title("API Performance Summary (Pass Only)")
         plt.tight_layout()
+        chart_path = os.path.join(REPO_PATH, "chart.png")
         plt.savefig(chart_path)
         st.session_state["matplotlib_fig"] = fig
 
@@ -222,6 +235,7 @@ if st.button("Run Scripts"):
         ax2.set_title("Response Time Trend by Transaction")
         ax2.legend(title="Transaction", bbox_to_anchor=(1.05, 1), loc="upper left")
         plt.tight_layout()
+        time_series_chart_path = os.path.join(REPO_PATH, "time_series_chart.png")
         plt.savefig(time_series_chart_path)
         st.session_state["time_series_fig"] = fig2
 
