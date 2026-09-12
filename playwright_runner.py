@@ -5,7 +5,6 @@ import json
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from fpdf import FPDF
 import time
 import altair as alt
 import matplotlib.pyplot as plt
@@ -153,62 +152,28 @@ if st.button("Run Scripts"):
                     results.append(future.result())
         else:  # Run by Time
             end_time_limit = datetime.now() + timedelta(minutes=value)
-            total_duration = int((end_time_limit - start_time).total_seconds())
             i = 1
-            status_placeholder = st.empty()
-
-            # --- Show initial table immediately ---
-            initial_status_df = pd.DataFrame({
-                "Start Time": [start_time.strftime('%Y-%m-%d %H:%M:%S')],
-                "Remaining Time (s)": [total_duration],
-                "Active Threads": [0]
-            })
-            status_placeholder.dataframe(initial_status_df, use_container_width=True, hide_index=True)
-
             with ThreadPoolExecutor(max_workers=threads) as executor:
                 while datetime.now() < end_time_limit:
                     futures = [executor.submit(run_script_api, script, t, i, sla, wait_time)
                                for t in range(1, threads+1)]
                     for future in as_completed(futures):
                         results.append(future.result())
-
-                    remaining_time = (end_time_limit - datetime.now()).total_seconds()
-                    if remaining_time <= 0:
-                        break
-
-                    status_df = pd.DataFrame({
-                        "Start Time": [start_time.strftime('%Y-%m-%d %H:%M:%S')],
-                        "Remaining Time (s)": [max(0, int(remaining_time))],
-                        "Active Threads": [threads]
-                    })
-                    status_placeholder.dataframe(status_df, use_container_width=True, hide_index=True)
-
                     if ramp_up > 0:
                         time.sleep(ramp_up)
                     i += 1
                     if wait_time > 0:
                         time.sleep(wait_time)
 
-            # --- Final status after completion ---
-            final_status_df = pd.DataFrame({
-                "Start Time": [start_time.strftime('%Y-%m-%d %H:%M:%S')],
-                "Remaining Time (s)": [0],
-                "Active Threads": [0]
-            })
-            status_placeholder.dataframe(final_status_df, use_container_width=True, hide_index=True)
+    end_time = datetime.now()
 
-    # --- Results aggregation
-        end_time = datetime.now()
     if results:
         final_df = pd.DataFrame(results)
-
-        # Compute TPM based only on Pass executions
         pass_execs = final_df[final_df["SLA"] == "Pass"]
         total_pass_execs = len(pass_execs)
         total_duration = (end_time - start_time).total_seconds() / 60
         tpm = round(total_pass_execs / total_duration, 2) if total_duration > 0 else 0
 
-        # --- Aggregated summary per Transaction ---
         summary_df = (
             final_df.groupby("Transaction")
             .agg(
@@ -219,123 +184,80 @@ if st.button("Run Scripts"):
             )
             .reset_index()
         )
-
         summary_df["TPM"] = tpm
 
-        # --- Show summary table ---
-        #st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                # Save in session state
+        st.session_state["final_df"] = final_df
+        st.session_state["summary_df"] = summary_df
+        chart_path = os.path.join(REPO_PATH, "chart.png")
+        time_series_chart_path = os.path.join(REPO_PATH, "time_series_chart.png")
 
-        # --- Show summary table with header and fixed column widths ---
-        st.markdown("## 📊 Final Execution Results")
-
-        column_widths = {
-            "Transaction": 150,
-            "Total_Threads_Executed": 120,
-            "Avg_Response_Time_s": 150,
-            "Pass_Count": 100,
-            "Fail_Count": 100,
-            "TPM": 80
-        }
-
-        st.markdown(
-        """
-        <style>
-        .stDataFrame [role="columnheader"] div {
-        white-space: normal !important;
-        text-align: center;
-        word-wrap: break-word !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-        )
-
-        st.dataframe(
-                summary_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    col: st.column_config.Column(width=width)
-                    for col, width in column_widths.items()
-                }
-            )
-
-        # --- Raw results download ---
-        raw_csv = final_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="📥 Download Raw Results (CSV)",
-            data=raw_csv,
-            file_name=f"{execution_name}_raw_results.csv",
-            mime="text/csv"
-        )
-
-        # --- Chart based on Pass executions only ---
+        # Generate charts
         pass_df = final_df[final_df["SLA"] == "Pass"]
         chart = alt.Chart(pass_df).mark_bar().encode(
             x=alt.X("Transaction:N", title="Transaction Name"),
             y=alt.Y("Response Time (s):Q", title="Average Response Time (s)"),
             tooltip=["Timestamp", "Transaction", "Thread", "Iteration", "Response Time (s)", "HTTP status code"]
         ).properties(title="API Performance Summary (Pass Only)").interactive()
-        st.altair_chart(chart, use_container_width=True)
+        st.session_state["altair_chart"] = chart
 
-        # --- Matplotlib chart (Pass only) ---
         fig, ax = plt.subplots(figsize=(8, 4))
         avg_pass_df = pass_df.groupby("Transaction", as_index=False)["Response Time (s)"].mean()
-        avg_pass_df.plot(
-            kind="bar",
-            x="Transaction",
-            y="Response Time (s)",
-            ax=ax,
-            color="skyblue",
-            legend=False
-        )
+        avg_pass_df.plot(kind="bar", x="Transaction", y="Response Time (s)", ax=ax, color="skyblue", legend=False)
         ax.set_ylabel("Avg Response Time (s)")
         ax.set_xlabel("Transaction Name")
         ax.set_title("API Performance Summary (Pass Only)")
-        chart_path = os.path.join(REPO_PATH, "chart.png")
         plt.tight_layout()
         plt.savefig(chart_path)
+        st.session_state["matplotlib_fig"] = fig
 
-        # --- Time-series graph: Response Time vs Elapsed Time per Transaction ---
-        final_df["Elapsed Time (s)"] = (
-            pd.to_datetime(final_df["Timestamp"]) - start_time
-        ).dt.total_seconds()
-
+        # Time-series chart
+        final_df["Elapsed Time (s)"] = (pd.to_datetime(final_df["Timestamp"]) - start_time).dt.total_seconds()
         fig2, ax2 = plt.subplots(figsize=(10, 6))
         for txn_name, txn_group in final_df.groupby("Transaction"):
-            ax2.plot(
-                txn_group["Elapsed Time (s)"],
-                txn_group["Response Time (s)"],
-                marker="o",
-                linestyle="-",
-                label=txn_name
-            )
+            ax2.plot(txn_group["Elapsed Time (s)"], txn_group["Response Time (s)"],
+                     marker="o", linestyle="-", label=txn_name)
         ax2.set_xlabel("Elapsed Time (s)")
         ax2.set_ylabel("Response Time (s)")
         ax2.set_title("Response Time Trend by Transaction")
         ax2.legend(title="Transaction", bbox_to_anchor=(1.05, 1), loc="upper left")
         plt.tight_layout()
-
-        time_series_chart_path = os.path.join(REPO_PATH, "time_series_chart.png")
         plt.savefig(time_series_chart_path)
-        st.pyplot(fig2)
+        st.session_state["time_series_fig"] = fig2
 
-        # --- Generate PDF report with both charts ---
-        pdf_file = generate_pdf_report(
-            summary_df,
-            start_time,
-            end_time,
-            execution_name,
-            chart_path,
-            extra_chart=time_series_chart_path
+        # Generate PDF report
+        pdf_file = generate_pdf_report(summary_df, start_time, end_time,
+                                       execution_name, chart_path, extra_chart=time_series_chart_path)
+        st.session_state["pdf_file"] = pdf_file
+
+# --- Display results if they exist in session state ---
+if "summary_df" in st.session_state:
+    st.markdown("## 📊 Final Execution Results")
+    st.dataframe(st.session_state["summary_df"], use_container_width=True, hide_index=True)
+
+    # Raw results download
+    raw_csv = st.session_state["final_df"].to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="📥 Download Raw Results (CSV)",
+        data=raw_csv,
+        file_name=f"{execution_name}_raw_results.csv",
+        mime="text/csv"
+    )
+
+    # PDF download
+    with open(st.session_state["pdf_file"], "rb") as f:
+        st.download_button(
+            label="📥 Download Summary Report (PDF)",
+            data=f,
+            file_name=os.path.basename(st.session_state["pdf_file"]),
+            mime="application/pdf"
         )
-        with open(pdf_file, "rb") as f:
-            st.download_button(
-                label="📥 Download Summary Report (PDF)",
-                data=f,
-                file_name=os.path.basename(pdf_file),
-                mime="application/pdf"
-            )
 
-        if st.button("🚀 Push Report to GitHub"):
-            push_to_github(pdf_file, REPO_PATH)
+    # Charts
+    st.altair_chart(st.session_state["altair_chart"], use_container_width=True)
+    st.pyplot(st.session_state["matplotlib_fig"])
+    st.pyplot(st.session_state["time_series_fig"])
+
+    # Push to GitHub
+    if st.button("🚀 Push Report to GitHub"):
+        push_to_github(st.session_state["pdf_file"], REPO_PATH)
