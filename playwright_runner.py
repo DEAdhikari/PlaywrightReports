@@ -12,8 +12,11 @@ from report_utils import generate_pdf_report, push_to_github
 
 TESTS_DIR = r"D:\PlaywrightUI\tests"
 REPO_PATH = r"D:\PlaywrightUI"
-REMOTE_NAME = "origin"
-BRANCH_NAME = "main"
+
+st.set_page_config(
+    page_title="Playwright Test Runner",
+    layout="wide"
+)
 
 # --- Sidebar for Mode Selection ---
 st.sidebar.title("⚙️ Execution Settings")
@@ -80,9 +83,13 @@ else:  # API mode
     cols_top = st.columns([2, 2, 2])
     with cols_top[0]:
         num_scripts = st.number_input("Number of Scripts", min_value=1, max_value=10, value=1, step=1)
+
     with cols_top[1]:
         if run_mode == "Run by Time":
             execution_time = st.number_input("Execution Time (minutes)", min_value=1, max_value=120, value=5, step=1)
+        else:  # Run by Iterations
+            ramp_up_time = st.number_input("Ramp Up Time (seconds)", min_value=0, max_value=60, value=0, step=1)
+
     with cols_top[2]:
         if run_mode == "Run by Time":
             ramp_up_time = st.number_input("Ramp Up Time (seconds)", min_value=0, max_value=60, value=0, step=1)
@@ -106,7 +113,7 @@ else:  # API mode
                 iterations = st.number_input("Iterations", min_value=1, max_value=50, value=1, step=1, key=f"{script}_iterations_api_{idx}")
             with cols[4]:
                 wait_time = st.number_input("Wait Time (sec)", min_value=0, max_value=60, value=0, step=1, key=f"{script}_wait_api_{idx}")
-            script_config[script] = (sla, threads, iterations, wait_time, "iterations", 0)
+            script_config[script] = (sla, threads, iterations, wait_time, "iterations", ramp_up_time)
         else:
             with cols[3]:
                 wait_time = st.number_input("Wait Time (sec)", min_value=0, max_value=60, value=0, step=1, key=f"{script}_wait_api_{idx}")
@@ -159,9 +166,13 @@ if st.button("Run Scripts"):
     for script, (sla, threads, value, wait_time, mode, ramp_up) in script_config.items():
         if mode == "iterations":
             with ThreadPoolExecutor(max_workers=threads) as executor:
-                futures = [executor.submit(run_script_api, script, t, i, sla, wait_time)
-                           for t in range(1, threads+1)
-                           for i in range(1, value+1)]
+                futures = []
+                for t in range(1, threads+1):
+                    # Ramp up delay between threads
+                    if ramp_up > 0 and t > 1:
+                        time.sleep(ramp_up)
+                    for i in range(1, value+1):
+                        futures.append(executor.submit(run_script_api, script, t, i, sla, wait_time))
                 for future in as_completed(futures):
                     results.append(future.result())
         else:  # Run by Time
